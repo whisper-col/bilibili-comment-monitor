@@ -5,8 +5,18 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from bilibili_api import video, comment, Credential
+from pymongo import MongoClient
 
 app = FastAPI()
+
+# ==================== MongoDB Connection ====================
+MONGO_URI = "mongodb+srv://kimi:ambition0527@cluster0.tnfy9y6.mongodb.net/?appName=Cluster0"
+mongo_client = MongoClient(MONGO_URI)
+mongo_db = mongo_client["bilibili_monitor"]
+comments_collection = mongo_db["comments"]
+
+# Create index on rpid for faster lookups and deduplication
+comments_collection.create_index("rpid", unique=True)
 
 # ==================== State & Models ====================
 
@@ -37,6 +47,7 @@ class MonitorState:
         self.sessdata = ""
         self.buvid3 = ""
         self.bili_jct = ""
+        self.fetch_sub_comments = True
         self.task: Optional[asyncio.Task] = None
         self.last_rpid = 0
         self.oid = 0
@@ -49,8 +60,45 @@ class ConfigRequest(BaseModel):
     sessdata: str
     buvid3: str = ""
     bili_jct: str = ""
+    fetch_sub_comments: bool = True
 
 # ==================== Logic ====================
+
+def save_comments_to_mongodb(comments_data: list, bvid: str, oid: int):
+    """
+    Save comments to MongoDB with upsert (avoid duplicates)
+    """
+    if not comments_data:
+        return 0
+    
+    saved_count = 0
+    for c in comments_data:
+        try:
+            doc = {
+                "rpid": c['rpid'],
+                "oid": oid,
+                "bvid": bvid,
+                "user": c['member']['uname'],
+                "mid": c['member']['mid'],
+                "content": c['content']['message'],
+                "ctime": c['ctime'],
+                "level": c['member']['level_info']['current_level'],
+                "likes": c.get('like', 0),
+                "rcount": c.get('rcount', 0),
+                "fetched_at": datetime.datetime.utcnow()
+            }
+            # Upsert: update if exists, insert if not
+            comments_collection.update_one(
+                {"rpid": c['rpid']},
+                {"$set": doc},
+                upsert=True
+            )
+            saved_count += 1
+        except Exception as e:
+            print(f"Error saving comment {c.get('rpid')}: {e}")
+            continue
+    
+    return saved_count
 
 async def fetch_task():
     """Background task to fetch comments loops"""
@@ -129,7 +177,54 @@ async def fetch_task():
                 traceback.print_exc()
                 break
         
-        print(f"Total history comments fetched: {len(all_replies)}")
+        print(f"Top-level comments fetched: {len(all_replies)}")
+        
+        # Conditionally fetch sub-replies
+        sub_replies_count = 0
+        if monitor_state.fetch_sub_comments:
+            await manager.broadcast({
+                "type": "status", 
+                "msg": f"正在加载子评论... (已获取 {len(all_replies)} 条主评论)",
+                "level": "info"
+            })
+            
+            for top_comment in all_replies[:]:  # Iterate over a copy
+                rcount = top_comment.get('rcount', 0)
+                if rcount > 0:
+                    try:
+                        # Create Comment object to fetch sub-replies
+                        c = comment.Comment(
+                            oid=monitor_state.oid,
+                            type_=comment.CommentResourceType.VIDEO,
+                            rpid=top_comment['rpid'],
+                            credential=credential
+                        )
+                        
+                        # Fetch all pages of sub-replies (max 20 per page)
+                        sub_page = 1
+                        while True:
+                            sub_data = await c.get_sub_comments(page_index=sub_page, page_size=20)
+                            sub_list = sub_data.get('replies') or []
+                            
+                            if not sub_list:
+                                break
+                                
+                            all_replies.extend(sub_list)
+                            sub_replies_count += len(sub_list)
+                            
+                            # Check if we got all sub-replies
+                            if len(sub_list) < 20:
+                                break
+                                
+                            sub_page += 1
+                            await asyncio.sleep(0.1)  # Rate limit
+                            
+                    except Exception as e:
+                        print(f"Error fetching sub-replies for rpid {top_comment['rpid']}: {e}")
+                        continue
+        
+        print(f"Sub-replies fetched: {sub_replies_count}")
+        print(f"Total comments fetched: {len(all_replies)}")
         
         if all_replies:
             # Sort by time (ctime) - oldest first for processing
@@ -158,6 +253,11 @@ async def fetch_task():
                     continue
             
             print(f"Broadcasting {len(initial_comments)} history comments.")
+            
+            # Save to MongoDB
+            saved = save_comments_to_mongodb(all_replies, monitor_state.target_bvid, monitor_state.oid)
+            print(f"Saved {saved} comments to MongoDB.")
+            
             await manager.broadcast({
                 "type": "new_comments", 
                 "data": initial_comments
@@ -247,6 +347,7 @@ async def start_monitor(req: ConfigRequest):
     monitor_state.sessdata = req.sessdata
     monitor_state.buvid3 = req.buvid3
     monitor_state.bili_jct = req.bili_jct
+    monitor_state.fetch_sub_comments = req.fetch_sub_comments
     monitor_state.running = True
     monitor_state.task = asyncio.create_task(fetch_task())
     return {"status": "started"}

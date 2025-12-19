@@ -8,6 +8,7 @@ dependencies = [
     "aiohttp>=3.13.2",
     "bilibili-api-python>=17.4.0",
     "fastapi>=0.125.0",
+    "pymongo[srv]>=4.15.5",
     "uvicorn[standard]>=0.38.0",
     "websockets>=15.0.1",
 ]

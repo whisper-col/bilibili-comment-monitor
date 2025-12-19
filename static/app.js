@@ -217,6 +217,8 @@ startBtn.addEventListener('click', async () => {
 
     statusText.textContent = "正在启动...";
     try {
+        const fetchSubComments = document.getElementById('fetchSubComments').checked;
+
         const response = await fetch('/api/start', {
             method: 'POST',
             headers: {
@@ -226,7 +228,8 @@ startBtn.addEventListener('click', async () => {
                 bvid,
                 sessdata,
                 buvid3,
-                bili_jct
+                bili_jct,
+                fetch_sub_comments: fetchSubComments
             })
         });
 
