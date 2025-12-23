@@ -1,36 +1,222 @@
-const bvidInput = document.getElementById('bvid');
-const sessdataInput = document.getElementById('sessdata');
-const buvid3Input = document.getElementById('buvid3');
-const biliJctInput = document.getElementById('bili_jct');
-const startBtn = document.getElementById('startBtn');
-const stopBtn = document.getElementById('stopBtn');
-const statusText = document.getElementById('statusText');
-const targetTitle = document.getElementById('targetTitle');
-const monitorBadge = document.getElementById('monitorBadge');
-const commentList = document.getElementById('commentList');
-const uploadBtn = document.getElementById('uploadBtn');
-const cookieFile = document.getElementById('cookieFile');
-const cookieStatus = document.getElementById('cookieStatus');
+let socket = null;
+let accountPool = []; // 存储 Cookie 对象的数组
 
-let ws = null;
-let isRunning = false;
+// DOM 元素引用
+const dom = {
+    bvid: document.getElementById('bvid'),
+    cookieFile: document.getElementById('cookie-file'),
+    importBtn: document.getElementById('import-btn'),
+    fileName: document.getElementById('file-name'),
+    accountList: document.getElementById('account-list'),
+    poolCount: document.getElementById('pool-count'),
+    clearPoolBtn: document.getElementById('clear-pool-btn'),
+    btnStart: document.getElementById('start-btn'),
+    btnStop: document.getElementById('stop-btn'),
+    status: document.getElementById('status-indicator'),
+    commentsContainer: document.getElementById('comments-container'),
+    fetchSub: document.getElementById('fetch_sub'),
+    btnClear: document.getElementById('clear-log')
+};
 
-// Initialize WebSocket
-function initWebSocket() {
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${protocol}//${location.host}/ws`);
+// ================= 账号池逻辑 =================
 
-    ws.onopen = () => {
-        console.log("Connected to WS");
+// 从 localStorage 加载账号池
+function loadAccountPool() {
+    try {
+        const saved = localStorage.getItem('bilibili_cookie_pool');
+        if (saved) {
+            accountPool = JSON.parse(saved);
+            console.log(`从本地加载了 ${accountPool.length} 个账号`);
+        }
+    } catch (e) {
+        console.error('加载账号池失败:', e);
+    }
+}
+
+// 保存账号池到 localStorage
+function saveAccountPool() {
+    try {
+        localStorage.setItem('bilibili_cookie_pool', JSON.stringify(accountPool));
+    } catch (e) {
+        console.error('保存账号池失败:', e);
+    }
+}
+
+function updateAccountListUI() {
+    dom.accountList.innerHTML = '';
+    dom.poolCount.textContent = `(${accountPool.length} 个账号)`;
+
+    if (accountPool.length === 0) {
+        dom.accountList.innerHTML = '<div class="empty-tip">暂无账号，请导入 Cookie 文件</div>';
+        dom.clearPoolBtn.style.display = 'none';
+        return;
+    }
+
+    dom.clearPoolBtn.style.display = 'block';
+
+    accountPool.forEach((acc, index) => {
+        const card = document.createElement('div');
+        card.className = 'account-card';
+
+        // 简单的掩码处理，只显示前10位
+        const maskSess = acc.sessdata.length > 10
+            ? acc.sessdata.substring(0, 10) + '...'
+            : acc.sessdata;
+
+        card.innerHTML = `
+            <div class="account-info">
+                <span class="account-index">#${index + 1}</span>
+                <span class="sess-mask">SESSDATA: ${maskSess}</span>
+            </div>
+            <button class="remove-btn" onclick="removeAccount(${index})">删除</button>
+        `;
+        dom.accountList.appendChild(card);
+    });
+}
+
+// 暴露给全局以便 HTML onclick 调用
+window.removeAccount = function (index) {
+    accountPool.splice(index, 1);
+    saveAccountPool();
+    updateAccountListUI();
+    if (accountPool.length === 0) {
+        dom.fileName.textContent = '';
+    }
+};
+
+// ================= Cookie 文件解析逻辑 =================
+
+// 从浏览器导出的 Cookie 数组中提取指定 name 的 value
+function extractCookieValue(cookieArray, cookieName) {
+    const cookie = cookieArray.find(c => c.name && c.name.toUpperCase() === cookieName.toUpperCase());
+    return cookie ? cookie.value : '';
+}
+
+// 判断是否是浏览器导出的 Cookie 格式（每个对象有 name 和 value 字段）
+function isBrowserCookieFormat(data) {
+    if (!Array.isArray(data) || data.length === 0) return false;
+    // 检查第一个对象是否有 name 和 value 字段
+    return data[0].name !== undefined && data[0].value !== undefined;
+}
+
+// 文件导入按钮点击
+dom.importBtn.addEventListener('click', () => {
+    dom.cookieFile.click();
+});
+
+// 文件选择处理
+dom.cookieFile.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+        try {
+            const data = JSON.parse(event.target.result);
+
+            // 验证数据格式
+            if (!Array.isArray(data)) {
+                throw new Error("文件内容必须是 JSON 数组格式");
+            }
+
+            // 追加到现有账号池（不清空）
+            let validCount = 0;
+
+            // 检测文件格式
+            if (isBrowserCookieFormat(data)) {
+                // 格式1: 浏览器插件导出的格式 [{name: "SESSDATA", value: "xxx"}, ...]
+                // 这种格式整个文件代表一个账号的所有 Cookie
+                console.log("检测到浏览器导出的 Cookie 格式");
+
+                const sessdata = extractCookieValue(data, 'SESSDATA');
+                const buvid3 = extractCookieValue(data, 'buvid3');
+                const bili_jct = extractCookieValue(data, 'bili_jct');
+
+                if (sessdata) {
+                    accountPool.push({
+                        sessdata: sessdata,
+                        buvid3: buvid3,
+                        bili_jct: bili_jct
+                    });
+                    validCount = 1;
+                } else {
+                    throw new Error("Cookie 文件中未找到 SESSDATA");
+                }
+            } else {
+                // 格式2: 我们定义的多账号格式 [{sessdata: "xxx", buvid3: "yyy"}, ...]
+                console.log("检测到多账号 Cookie 格式");
+
+                data.forEach((item, idx) => {
+                    if (item.sessdata && typeof item.sessdata === 'string') {
+                        accountPool.push({
+                            sessdata: item.sessdata.trim(),
+                            buvid3: (item.buvid3 || '').trim(),
+                            bili_jct: (item.bili_jct || '').trim()
+                        });
+                        validCount++;
+                    } else {
+                        console.warn(`第 ${idx + 1} 条记录缺少 sessdata，已跳过`);
+                    }
+                });
+            }
+
+            if (validCount === 0) {
+                throw new Error("文件中没有有效的账号数据（需要 SESSDATA）");
+            }
+
+            // 保存并更新 UI
+            saveAccountPool();
+            dom.fileName.textContent = `✅ ${file.name} (${validCount} 个账号)`;
+            updateAccountListUI();
+
+            alert(`成功导入 ${validCount} 个账号！`);
+
+        } catch (err) {
+            alert(`导入失败: ${err.message}`);
+            console.error('解析 Cookie 文件失败:', err);
+        }
     };
 
-    ws.onmessage = (event) => {
+    reader.onerror = () => {
+        alert("读取文件失败");
+    };
+
+    reader.readAsText(file);
+
+    // 重置 input 以便可以重复选择同一文件
+    e.target.value = '';
+});
+
+// 清空账号池
+dom.clearPoolBtn.addEventListener('click', () => {
+    if (!confirm("确定要清空所有账号吗？")) return;
+    accountPool = [];
+    saveAccountPool();
+    dom.fileName.textContent = '';
+    updateAccountListUI();
+});
+
+// ================= WebSocket & 监控逻辑 =================
+
+function initWebSocket() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+    socket = new WebSocket(wsUrl);
+
+    socket.onopen = () => {
+        console.log("WS Connected");
+    };
+
+    socket.onmessage = (event) => {
         const msg = JSON.parse(event.data);
         handleMessage(msg);
     };
 
-    ws.onclose = () => {
-        statusText.textContent = "连接断开，尝试重连...";
+    socket.onclose = () => {
+        console.log("WS Closed, retrying in 3s...");
+        dom.status.className = 'status-offline';
+        dom.status.textContent = '连接断开';
         setTimeout(initWebSocket, 3000);
     };
 }
@@ -39,227 +225,136 @@ function handleMessage(msg) {
     switch (msg.type) {
         case 'init':
             updateRunningState(msg.running);
-            if (msg.title) targetTitle.textContent = msg.title;
+            if (msg.running && msg.title) {
+                dom.status.textContent = `监控中: ${msg.title}`;
+            }
             break;
         case 'status':
-            statusText.textContent = msg.msg;
-            if (msg.title) {
-                targetTitle.textContent = msg.title;
-            }
-            if (msg.level === 'error') {
-                statusText.style.color = '#ff4757';
-                updateRunningState(false);
-            } else if (msg.level === 'success') {
-                statusText.style.color = '#2ecc71';
-            } else {
-                statusText.style.color = '#9499a0';
-            }
+            dom.status.textContent = msg.msg;
+            if (msg.level === 'success') dom.status.className = 'status-active';
+            if (msg.level === 'error') dom.status.className = 'status-offline';
+
+            appendSystemLog(msg.msg, msg.level);
             break;
         case 'new_comments':
-            renderComments(msg.data);
+            msg.data.forEach(comment => {
+                appendComment(comment);
+            });
             break;
         case 'clear_comments':
-            commentList.innerHTML = '<div class="empty-state">正在加载评论...</div>';
+            dom.commentsContainer.innerHTML = '';
             break;
     }
 }
 
-function updateRunningState(running) {
-    isRunning = running;
-    if (running) {
-        startBtn.disabled = true;
-        stopBtn.disabled = false;
-        bvidInput.disabled = true;
-        sessdataInput.disabled = true;
-        monitorBadge.textContent = "MONITORING";
-        monitorBadge.classList.add('active');
-        // Clear empty state if it exists
-        if (document.querySelector('.empty-state')) {
-            commentList.innerHTML = '';
-        }
-    } else {
-        startBtn.disabled = false;
-        stopBtn.disabled = true;
-        bvidInput.disabled = false;
-        sessdataInput.disabled = false;
-        monitorBadge.textContent = "OFFLINE";
-        monitorBadge.classList.remove('active');
-    }
-}
-
-function renderComments(comments) {
-    // Reverse to show newest on top if prepending
-    // Data comes in chronological (oldest -> newest), we want to prepend newest first.
-    // So we iterate the list as is and prepend each one, effectively reversing them in the UI stack.
-    comments.forEach(c => {
-        const card = document.createElement('div');
-        card.className = 'comment-card';
-        card.innerHTML = `
-            <img src="${c.avatar}" class="avatar" loading="lazy">
-            <div class="content-wrapper">
-                <div class="header">
-                    <span class="username">${escapeHtml(c.user)}</span>
-                    <span class="level">LV${c.level}</span>
-                    <span class="time">${c.time}</span>
-                </div>
-                <div class="message">${escapeHtml(c.content)}</div>
-            </div>
-        `;
-        commentList.prepend(card);
-    });
-}
-
-function escapeHtml(text) {
+function appendComment(c) {
     const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    div.className = 'comment-item';
+    div.innerHTML = `
+        <div class="comment-time">${c.time.split(' ')[1] || c.time}</div>
+        <div class="comment-user">
+            <span class="lv-badge">LV${c.level}</span>${c.user}
+        </div>
+        <div class="comment-content">${c.content}</div>
+    `;
+    dom.commentsContainer.prepend(div);
 }
 
-// Cookie Handling
-
-uploadBtn.addEventListener('click', () => cookieFile.click());
-
-cookieFile.addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-        try {
-            const content = event.target.result;
-            const json = JSON.parse(content);
-            let cookies = {};
-
-            // Handle EditThisCookie array format
-            if (Array.isArray(json)) {
-                json.forEach(c => cookies[c.name] = c.value);
-            } else {
-                cookies = json;
-            }
-
-            if (cookies.SESSDATA) {
-                // Fill hidden inputs
-                document.getElementById('sessdata').value = cookies.SESSDATA;
-                document.getElementById('buvid3').value = cookies.buvid3 || "";
-                document.getElementById('bili_jct').value = cookies.bili_jct || "";
-
-                cookieStatus.style.display = 'block';
-                cookieStatus.textContent = `✓ 已解析: SESSDATA, ${cookies.bili_jct ? 'bili_jct' : ''}`;
-                uploadBtn.textContent = "✅ 已加载 " + file.name;
-                uploadBtn.style.background = "#2ecc71";
-            } else {
-                alert("错误: JSON 中未找到 SESSDATA 字段");
-            }
-        } catch (err) {
-            alert("JSON 解析失败: " + err);
-        }
-    };
-    reader.readAsText(file);
-});
-
-// API Calls
-// Load saved data on startup
-const savedBvid = localStorage.getItem('bilibili_monitor_bvid');
-const savedCookie = localStorage.getItem('bilibili_monitor_cookie');
-
-if (savedBvid) {
-    bvidInput.value = savedBvid;
+function appendSystemLog(text, level) {
+    const div = document.createElement('div');
+    div.style.padding = "5px 0";
+    div.style.color = level === 'error' ? 'red' : (level === 'success' ? 'green' : '#666');
+    div.style.fontSize = "12px";
+    div.style.textAlign = "center";
+    div.textContent = `--- ${text} ---`;
+    dom.commentsContainer.prepend(div);
 }
 
-if (savedCookie) {
+function updateRunningState(isRunning) {
+    if (isRunning) {
+        dom.btnStart.disabled = true;
+        dom.btnStop.disabled = false;
+        dom.status.className = 'status-active';
+        dom.bvid.disabled = true;
+        dom.importBtn.disabled = true;
+        dom.clearPoolBtn.disabled = true;
+    } else {
+        dom.btnStart.disabled = false;
+        dom.btnStop.disabled = true;
+        dom.status.className = 'status-offline';
+        dom.status.textContent = '就绪';
+        dom.bvid.disabled = false;
+        dom.importBtn.disabled = false;
+        dom.clearPoolBtn.disabled = false;
+    }
+}
+
+// ================= 按钮事件 =================
+
+// 从 URL 或纯 BVID 中提取 BVID
+function extractBvid(input) {
+    // 如果已经是纯 BVID 格式
+    if (/^BV[a-zA-Z0-9]+$/i.test(input)) {
+        return input;
+    }
+    // 尝试从 URL 中提取 BV 号
+    const match = input.match(/BV[a-zA-Z0-9]+/i);
+    return match ? match[0] : null;
+}
+
+dom.btnStart.addEventListener('click', async () => {
+    const rawInput = dom.bvid.value.trim();
+    if (!rawInput) return alert("请输入 BVID 或视频链接");
+
+    const bvid = extractBvid(rawInput);
+    if (!bvid) return alert("无法识别 BVID，请输入正确的 BV 号或视频链接");
+
+    if (accountPool.length === 0) return alert("请先导入 Cookie 文件！");
+
+    dom.btnStart.disabled = true;
+
     try {
-        const parsed = JSON.parse(savedCookie);
-        sessdataInput.value = parsed.sessdata || '';
-        buvid3Input.value = parsed.buvid3 || '';
-        biliJctInput.value = parsed.bili_jct || '';
-
-        cookieStatus.style.display = 'block';
-        cookieStatus.textContent = '✓ 已加载上次使用的 Cookie';
-        cookieStatus.style.color = '#2ecc71';
-
-        uploadBtn.textContent = "✅ 已恢复 Cookie";
-        uploadBtn.style.background = "#2ecc71";
-    } catch (e) {
-        console.error('Failed to load saved cookie', e);
-    }
-}
-
-startBtn.addEventListener('click', async () => {
-    let bvid = bvidInput.value.trim();
-
-    // Extract BVID from URL if full link is pasted
-    // Regex matches BV followed by alphanumeric chars, ending at ? or / or end of string
-    const bvMatch = bvid.match(/(BV[a-zA-Z0-9]+)/);
-    if (bvMatch) {
-        bvid = bvMatch[1];
-        bvidInput.value = bvid; // Auto-correct input field
-    }
-
-    if (!bvid) {
-        alert('请输入 BVID');
-        return;
-    }
-
-    const sessdata = sessdataInput.value.trim();
-    const buvid3 = buvid3Input.value.trim();
-    const bili_jct = biliJctInput.value.trim();
-
-    if (!sessdata) {
-        alert('请先加载 Cookie JSON 文件');
-        return;
-    }
-
-    // Save to localStorage
-    localStorage.setItem('bilibili_monitor_bvid', bvid);
-    localStorage.setItem('bilibili_monitor_cookie', JSON.stringify({
-        sessdata, buvid3, bili_jct
-    }));
-
-    statusText.textContent = "正在启动...";
-    try {
-        const fetchSubComments = document.getElementById('fetchSubComments').checked;
-
-        const response = await fetch('/api/start', {
+        const res = await fetch('/api/start', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                bvid,
-                sessdata,
-                buvid3,
-                bili_jct,
-                fetch_sub_comments: fetchSubComments
+                bvid: bvid,
+                fetch_sub_comments: dom.fetchSub.checked,
+                cookies: accountPool
             })
         });
-
-        const data = await response.json();
+        const data = await res.json();
         if (data.status === 'started') {
             updateRunningState(true);
-        } else if (data.status === 'already_running') {
-            alert("监控已在运行中");
         } else {
-            updateRunningState(false);
-            statusText.textContent = `启动失败: ${data.message || '未知错误'}`;
-            statusText.style.color = '#ff4757';
+            alert("启动失败: " + JSON.stringify(data));
+            dom.btnStart.disabled = false;
         }
-    } catch (error) {
-        console.error('Error:', error);
-        updateRunningState(false);
-        statusText.textContent = '连接后端失败';
-        statusText.style.color = '#ff4757';
+    } catch (e) {
+        alert("请求错误: " + e);
+        dom.btnStart.disabled = false;
     }
 });
 
-stopBtn.addEventListener('click', async () => {
+dom.btnStop.addEventListener('click', async () => {
+    if (!confirm("确定停止监控吗？")) return;
     try {
         await fetch('/api/stop', { method: 'POST' });
         updateRunningState(false);
-        statusText.textContent = "已手动停止";
     } catch (e) {
-        console.error(e);
+        alert("停止失败");
     }
 });
 
-// Start
+dom.btnClear.addEventListener('click', () => {
+    dom.commentsContainer.innerHTML = '';
+});
+
+// 启动 WebSocket
 initWebSocket();
+
+// 从 localStorage 加载账号池
+loadAccountPool();
+
+// 初始化列表
+updateAccountListUI();

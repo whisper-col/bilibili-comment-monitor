@@ -4,87 +4,77 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bilibili 评论实时监控</title>
+    <title>B站评论多账号监控台</title>
     <link rel="stylesheet" href="style.css">
 </head>
 
 <body>
     <div class="container">
-        <!-- 左侧配置通过 -->
-        <aside class="sidebar">
-            <div class="logo">
-                <h2>BiliMonitor</h2>
-                <span>实时评论监控系统</span>
-            </div>
+        <header>
+            <h1>📡 B站评论监控 (多账号版)</h1>
+            <div id="status-indicator" class="status-offline">系统就绪</div>
+        </header>
 
-            <div class="config-form">
-                <div class="form-group">
-                    <label>视频 BV 号</label>
-                    <input type="text" id="bvid" placeholder="请输入 BVID 或 视频链接..." value="BV1xx411c7mD">
+        <div class="control-panel">
+            <div class="section-group">
+                <h3>1. 监控目标</h3>
+                <div class="input-group">
+                    <label>视频 BVID</label>
+                    <input type="text" id="bvid" placeholder="输入 BVID 或粘贴视频链接" value="">
                 </div>
-
-                <div class="form-group">
-                    <label>SESSDATA / Cookie JSON</label>
-                    <div style="display:flex; gap:10px; align-items:center;">
-                        <input type="file" id="cookieFile" accept=".json,.txt" class="file-input" style="display:none">
-                        <button id="uploadBtn" class="btn secondary" style="flex:1;">📂 导入 Cookie JSON</button>
-                    </div>
-                    <div id="cookieStatus" style="font-size:0.8em; margin-top:5px; color:#2ecc71; display:none;"></div>
-                    <input type="hidden" id="sessdata">
-                    <input type="hidden" id="buvid3">
-                    <input type="hidden" id="bili_jct">
-                </div>
-
-                <div class="form-group" style="margin-top: 10px;">
-                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                        <input type="checkbox" id="fetchSubComments" checked>
-                        <span>获取子评论（楼中楼回复）</span>
-                    </label>
-                </div>
-
-                <div class="actions">
-                    <button id="startBtn" class="btn primary">开始监控</button>
-                    <button id="stopBtn" class="btn danger" disabled>停止监控</button>
+                <div class="checkbox-group">
+                    <input type="checkbox" id="fetch_sub" checked>
+                    <label for="fetch_sub">同时抓取子评论 (楼中楼)</label>
                 </div>
             </div>
 
-            <div class="status-panel">
-                <div class="status-item">
-                    <span class="label">状态</span>
-                    <span id="statusText" class="value">等待连接...</span>
-                </div>
-                <div class="status-item">
-                    <span class="label">目标</span>
-                    <span id="targetTitle" class="value">-</span>
-                </div>
-            </div>
-        </aside>
+            <div class="section-group">
+                <h3>2. 账号池管理 <span id="pool-count">(0 个账号)</span></h3>
+                <p class="hint">导入包含多个账号 Cookie 的 JSON 文件，系统会自动轮询使用。</p>
 
-        <!-- 右侧评论流 -->
-        <main class="main-content">
-            <div class="stream-header">
+                <div class="file-upload-area">
+                    <input type="file" id="cookie-file" accept=".json" hidden>
+                    <button id="import-btn" class="btn secondary-btn">📁 导入 Cookie 文件 (.json)</button>
+                    <span id="file-name" class="file-name"></span>
+                </div>
+
+                <div class="format-hint">
+                    <details>
+                        <summary>📋 文件格式说明</summary>
+                        <pre>[
+  {
+    "sessdata": "你的SESSDATA_1",
+    "buvid3": "可选",
+    "bili_jct": "可选"
+  },
+  {
+    "sessdata": "你的SESSDATA_2"
+  }
+]</pre>
+                    </details>
+                </div>
+
+                <div id="account-list" class="account-list">
+                    <div class="empty-tip">暂无账号，请导入 Cookie 文件</div>
+                </div>
+
+                <button id="clear-pool-btn" class="btn text-btn-danger" style="display:none;">🗑️ 清空账号池</button>
+            </div>
+
+            <div class="action-bar">
+                <button id="start-btn" class="btn primary-btn">🚀 开始监控</button>
+                <button id="stop-btn" class="btn danger-btn" disabled>🛑 停止监控</button>
+            </div>
+        </div>
+
+        <div class="log-panel">
+            <div class="log-header">
                 <h3>实时评论流</h3>
-                <span class="badge" id="monitorBadge">OFFLINE</span>
+                <button id="clear-log" class="text-btn">清空</button>
             </div>
-
-            <div id="commentList" class="comment-list">
-                <!-- 评论项模板 -->
-                <!-- 
-                <div class="comment-card">
-                    <img src="avatar.jpg" class="avatar">
-                    <div class="content-wrapper">
-                        <div class="header">
-                            <span class="username">User</span>
-                            <span class="level">LV5</span>
-                            <span class="time">12:00:00</span>
-                        </div>
-                        <div class="message">评论内容...</div>
-                    </div>
-                </div> 
-                -->
-                <div class="empty-state">待命模式：请配置并点击开始监控...</div>
+            <div id="comments-container" class="comments-list">
             </div>
-        </main>
+        </div>
     </div>
 
     <script src="app.js"></script>
