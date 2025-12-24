@@ -3,7 +3,16 @@ import { cors } from 'hono/cors'
 import { basicAuth } from 'hono/basic-auth'
 import { MongoClient } from 'mongodb'
 
-const app = new Hono()
+// 定义环境变量类型
+type Bindings = {
+    MONGO_URI: string;
+    AUTH_USER: string;
+    AUTH_PASSWORD: string;
+    GITHUB_TOKEN: string;
+    GITHUB_REPO: string;
+}
+
+const app = new Hono<{ Bindings: Bindings }>()
 
 // 启用 CORS
 app.use('*', cors())
