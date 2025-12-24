@@ -1,4 +1,4 @@
-name: 定时抓取 Bilibili 评论
+name: Sync Data xK9mP2vL
 
 on:
   push:
