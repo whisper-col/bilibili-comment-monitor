@@ -5,7 +5,12 @@ on:
     # 每 20 分钟运行一次
     - cron: '*/20 * * * *'
   workflow_dispatch:
-    # 支持手动触发（通过 WebUI 或 GitHub 页面）
+    # 支持手动触发
+    inputs:
+      bvid:
+        description: '要抓取的视频 BVID（留空则使用 Secrets 中的配置）'
+        required: false
+        type: string
 
 jobs:
   crawl:
@@ -26,8 +31,7 @@ jobs:
       - name: 运行爬虫
         run: uv run python crawler.py
         env:
-          # BVID 现在从 WebUI 动态配置，存储在 MongoDB 的 monitor_config 表中
-          # 如果设置了 BVID，则只抓取该视频；否则抓取 MongoDB 中配置的所有视频
-          BVID: ${{ secrets.BVID }}
+          # 优先使用手动输入的 BVID，否则用 Secrets
+          BVID: ${{ github.event.inputs.bvid || secrets.BVID }}
           COOKIES_JSON: ${{ secrets.COOKIES_JSON }}
           MONGO_URI: ${{ secrets.MONGO_URI }}

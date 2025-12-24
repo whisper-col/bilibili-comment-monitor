@@ -321,10 +321,19 @@ app.delete('/api/monitor/:bvid', async (c) => {
 // 触发 GitHub Actions 运行爬虫
 app.post('/api/run', async (c) => {
     const githubToken = c.env?.GITHUB_TOKEN as string;
-    const githubRepo = c.env?.GITHUB_REPO as string || 'whisper-col/bilibili-comment-monitor';
+    const githubRepo = c.env?.GITHUB_REPO as string || 'whisper-col/feishu-killbill-comments';
 
     if (!githubToken) {
         return c.json({ code: 500, msg: 'GITHUB_TOKEN 未配置' });
+    }
+
+    // 获取请求体中的 bvid
+    let bvid = '';
+    try {
+        const body = await c.req.json();
+        bvid = body.bvid || '';
+    } catch {
+        // 没有 body 也可以
     }
 
     try {
@@ -339,13 +348,16 @@ app.post('/api/run', async (c) => {
                     'User-Agent': 'Bilibili-Monitor-Worker'
                 },
                 body: JSON.stringify({
-                    ref: 'master'
+                    ref: 'master',
+                    inputs: {
+                        bvid: bvid
+                    }
                 })
             }
         );
 
         if (response.status === 204) {
-            return c.json({ code: 0, msg: '已触发抓取任务，请稍后查看结果' });
+            return c.json({ code: 0, msg: bvid ? `已触发抓取 ${bvid}` : '已触发抓取任务' });
         } else {
             const error = await response.text();
             return c.json({ code: response.status, msg: `触发失败: ${error}` });
@@ -961,7 +973,8 @@ function getIndexHTML(): string {
     <div class="container">
         <header>
             <h1>📡 B站评论监控</h1>
-            <div class="status-bar">
+            <div class="status-bar" style="flex-wrap:wrap;gap:10px;">
+                <input type="text" id="run-bvid" placeholder="输入 BVID 抓取" style="padding:8px 12px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.2);border-radius:6px;color:#fff;width:180px;">
                 <button class="refresh-btn" id="run-btn" onclick="runCrawler()" style="padding:8px 20px;">🚀 运行抓取</button>
                 <div class="status-badge" id="run-status">
                     <span id="run-status-text">就绪</span>
@@ -1030,15 +1043,23 @@ function getIndexHTML(): string {
         async function runCrawler() {
             const btn = document.getElementById('run-btn');
             const status = document.getElementById('run-status-text');
+            const bvidInput = document.getElementById('run-bvid');
+            const bvid = bvidInput ? bvidInput.value.trim() : '';
+            
             btn.disabled = true;
             btn.textContent = '运行中...';
             status.textContent = '正在触发...';
             try {
-                const res = await fetch('/api/run', { method: 'POST' });
+                const res = await fetch('/api/run', { 
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ bvid })
+                });
                 const json = await res.json();
                 if (json.code === 0) {
                     status.textContent = '已触发，等待执行';
                     alert(json.msg);
+                    if (bvidInput) bvidInput.value = '';
                     // 30 秒后刷新状态
                     setTimeout(loadRunStatus, 30000);
                 } else {
