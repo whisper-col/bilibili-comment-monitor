@@ -1176,16 +1176,17 @@ function getIndexHTML(): string {
             } catch (e) { alert('清空失败'); }
         }
 
-        // 加载视频列表
-        async function loadVideos() {
+        // 加载视频列表（带重试）
+        async function loadVideos(retryCount = 0) {
+            const select = document.getElementById('video-select');
             try {
+                select.innerHTML = '<option value="">加载中...</option>';
                 const res = await fetch('/api/videos');
                 const json = await res.json();
                 
                 if (json.code !== 0) throw new Error(json.msg);
                 
                 videosData = json.data;
-                const select = document.getElementById('video-select');
                 
                 if (videosData.length === 0) {
                     select.innerHTML = '<option value="">暂无视频数据，等待爬虫抓取...</option>';
@@ -1207,8 +1208,12 @@ function getIndexHTML(): string {
                 }
             } catch (e) {
                 console.error('加载视频列表失败:', e);
-                document.getElementById('video-select').innerHTML = 
-                    '<option value="">加载失败，请刷新页面重试</option>';
+                // 自动重试最多 2 次
+                if (retryCount < 2) {
+                    setTimeout(() => loadVideos(retryCount + 1), 1000);
+                    return;
+                }
+                select.innerHTML = '<option value="" onclick="loadVideos()">⚠️ 加载失败，点击重试</option>';
             }
         }
 
@@ -1220,16 +1225,17 @@ function getIndexHTML(): string {
             const video = videosData.find(v => v.bvid === bvid);
             if (video) {
                 const info = document.getElementById('video-info');
-                info.classList.add('show');
+                if (info) info.classList.add('show');
                 
-                document.getElementById('video-title').textContent = video.title;
-                document.getElementById('video-bvid').textContent = video.bvid;
-                document.getElementById('video-count').textContent = video.comment_count || 0;
-                document.getElementById('video-updated').textContent = 
-                    video.last_updated ? new Date(video.last_updated).toLocaleString('zh-CN') : '--';
+                const titleEl = document.getElementById('video-title');
+                const bvidEl = document.getElementById('video-bvid');
+                const countEl = document.getElementById('video-count');
+                const updatedEl = document.getElementById('video-updated');
                 
-                document.getElementById('last-update').textContent = 
-                    '上次更新: ' + (video.last_updated ? new Date(video.last_updated).toLocaleString('zh-CN') : '--');
+                if (titleEl) titleEl.textContent = video.title;
+                if (bvidEl) bvidEl.textContent = video.bvid;
+                if (countEl) countEl.textContent = video.comment_count || 0;
+                if (updatedEl) updatedEl.textContent = video.last_updated ? new Date(video.last_updated).toLocaleString('zh-CN') : '--';
             }
             
             loadComments();

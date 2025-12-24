@@ -1,9 +1,9 @@
 name: 定时抓取 Bilibili 评论
 
 on:
-  # schedule:
-  #   # 每 20 分钟运行一次（已禁用，改为 WebUI 手动触发）
-  #   - cron: '*/20 * * * *'
+  schedule:
+    # 每 20 分钟运行一次
+    - cron: '*/20 * * * *'
   workflow_dispatch:
     # 支持手动触发（通过 WebUI 或 GitHub 页面）
 
