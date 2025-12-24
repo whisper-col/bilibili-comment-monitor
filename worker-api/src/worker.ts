@@ -315,6 +315,25 @@ app.delete('/api/monitor/:bvid', async (c) => {
     finally { await client.close(); }
 });
 
+// 更新监控状态（启用/禁用）
+app.patch('/api/monitor/:bvid', async (c) => {
+    const mongoUri = c.env?.MONGO_URI as string;
+    if (!mongoUri) return c.json({ code: 500, msg: 'MONGO_URI not configured' });
+    const bvid = c.req.param('bvid');
+    const body = await c.req.json();
+    const client = new MongoClient(mongoUri, { autoEncryption: undefined, monitorCommands: false, connectTimeoutMS: 5000 } as any);
+    try {
+        await client.connect();
+        const result = await client.db('bilibili_monitor').collection('monitor_config').updateOne(
+            { bvid },
+            { $set: { enabled: body.enabled } }
+        );
+        if (result.matchedCount === 0) return c.json({ code: 404, msg: '未找到该视频' });
+        return c.json({ code: 0, msg: body.enabled ? '已启用' : '已暂停' });
+    } catch (e: any) { return c.json({ code: 500, msg: e.message }); }
+    finally { await client.close(); }
+});
+
 
 // ==================== 手动运行 API ====================
 
@@ -328,44 +347,48 @@ app.post('/api/run', async (c) => {
     }
 
     // 获取请求体参数
+    let bvid = '';
     let fetchReplies = 'true';
-    let action = 'run';
     try {
         const body = await c.req.json();
+        bvid = body.bvid || '';
         fetchReplies = body.fetch_replies !== false ? 'true' : 'false';
-        action = body.action || 'run';
     } catch {
         // 没有 body 使用默认值
     }
 
-    try {
-        // 调用 GitHub API 触发 workflow_dispatch
-        const response = await fetch(
-            `https://api.github.com/repos/${githubRepo}/actions/workflows/crawl.yml/dispatches`,
-            {
-                method: 'POST',
-                headers: {
-                    'Accept': 'application/vnd.github.v3+json',
-                    'Authorization': `token ${githubToken}`,
-                    'User-Agent': 'Bilibili-Monitor-Worker'
-                },
-                body: JSON.stringify({
-                    ref: 'master',
-                    inputs: {
-                        fetch_replies: fetchReplies,
-                        action: action
-                    }
-                })
-            }
-        );
+    // 使用 waitUntil 异步调用 GitHub API，立即返回响应
+    const ctx = c.executionCtx;
+    const githubPromise = fetch(
+        `https://api.github.com/repos/${githubRepo}/actions/workflows/crawl.yml/dispatches`,
+        {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/vnd.github.v3+json',
+                'Authorization': `token ${githubToken}`,
+                'User-Agent': 'Bilibili-Monitor-Worker'
+            },
+            body: JSON.stringify({
+                ref: 'master',
+                inputs: {
+                    bvid: bvid,
+                    fetch_replies: fetchReplies
+                }
+            })
+        }
+    );
 
+    // 使用 waitUntil 让请求在后台完成
+    if (ctx && ctx.waitUntil) {
+        ctx.waitUntil(githubPromise);
+        return c.json({ code: 0, msg: bvid ? `已触发抓取 ${bvid}` : '已触发抓取任务' });
+    }
+
+    // 降级：如果不支持 waitUntil，同步等待
+    try {
+        const response = await githubPromise;
         if (response.status === 204) {
-            const msgs: Record<string, string> = {
-                'run': '已触发抓取任务',
-                'pause': '已暂停定时抓取',
-                'resume': '已恢复定时抓取'
-            };
-            return c.json({ code: 0, msg: msgs[action] || '操作成功' });
+            return c.json({ code: 0, msg: bvid ? `已触发抓取 ${bvid}` : '已触发抓取任务' });
         } else {
             const error = await response.text();
             return c.json({ code: response.status, msg: `触发失败: ${error}` });
@@ -985,8 +1008,6 @@ function getIndexHTML(): string {
                 <label style="display:flex;align-items:center;gap:5px;color:#888;font-size:0.9rem;">
                     <input type="checkbox" id="fetch-replies" checked> 抓取回复
                 </label>
-                <button class="refresh-btn" id="run-btn" onclick="runCrawler()" style="padding:8px 20px;">🚀 运行抓取</button>
-                <button class="refresh-btn" id="pause-btn" onclick="togglePause()" style="padding:8px 16px;background:#666;">⏸️ 暂停</button>
                 <div class="status-badge" id="run-status">
                     <span id="run-status-text">就绪</span>
                 </div>
@@ -1050,70 +1071,6 @@ function getIndexHTML(): string {
             document.getElementById('cookie-file').addEventListener('change', handleCookieFile);
         }
 
-        // ================= 手动运行 =================
-        let isPaused = false;
-        
-        async function runCrawler() {
-            const btn = document.getElementById('run-btn');
-            const status = document.getElementById('run-status-text');
-            const fetchReplies = document.getElementById('fetch-replies')?.checked ?? true;
-            
-            btn.disabled = true;
-            btn.textContent = '运行中...';
-            status.textContent = '正在触发...';
-            try {
-                const res = await fetch('/api/run', { 
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ fetch_replies: fetchReplies, action: 'run' })
-                });
-                const json = await res.json();
-                if (json.code === 0) {
-                    status.textContent = '已触发，等待执行';
-                    alert(json.msg);
-                    setTimeout(loadRunStatus, 30000);
-                } else {
-                    status.textContent = '触发失败';
-                    alert(json.msg);
-                }
-            } catch (e) {
-                status.textContent = '请求失败';
-                alert('运行失败: ' + e.message);
-            } finally {
-                btn.disabled = false;
-                btn.textContent = '🚀 运行抓取';
-            }
-        }
-
-        async function togglePause() {
-            const btn = document.getElementById('pause-btn');
-            const status = document.getElementById('run-status-text');
-            const action = isPaused ? 'resume' : 'pause';
-            
-            btn.disabled = true;
-            try {
-                const res = await fetch('/api/run', { 
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action })
-                });
-                const json = await res.json();
-                if (json.code === 0) {
-                    isPaused = !isPaused;
-                    btn.textContent = isPaused ? '▶️ 继续' : '⏸️ 暂停';
-                    btn.style.background = isPaused ? '#4CAF50' : '#666';
-                    status.textContent = isPaused ? '已暂停' : '运行中';
-                    alert(json.msg);
-                } else {
-                    alert(json.msg);
-                }
-            } catch (e) {
-                alert('操作失败: ' + e.message);
-            } finally {
-                btn.disabled = false;
-            }
-        }
-
         async function loadRunStatus() {
             try {
                 const res = await fetch('/api/run/status');
@@ -1148,7 +1105,22 @@ function getIndexHTML(): string {
                     list.innerHTML = '<div style="color:#666;text-align:center;padding:10px;">暂无监控，请添加 BVID</div>';
                     return;
                 }
-                list.innerHTML = json.data.map(m => '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;background:rgba(0,0,0,0.2);border-radius:6px;margin-bottom:6px;"><div><span style="color:#00d4ff;font-weight:600;">' + m.bvid + '</span><span style="color:#666;margin-left:10px;font-size:0.85rem;">' + (m.title || '等待抓取') + '</span></div><button style="background:rgba(255,82,82,0.2);color:#ff5252;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;" onclick="removeMonitor(\\'' + m.bvid + '\\')">删除</button></div>').join('');
+                list.innerHTML = json.data.map(m => {
+                    const enabled = m.enabled !== false;
+                    const statusText = enabled ? (m.title || '等待抓取') : '已暂停';
+                    const statusColor = enabled ? '#666' : '#ff9800';
+                    const pauseBtn = enabled 
+                        ? '<button style="background:rgba(255,152,0,0.2);color:#ff9800;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;" onclick="toggleMonitor(\\'' + m.bvid + '\\', false)">⏸️</button>'
+                        : '<button style="background:rgba(76,175,80,0.2);color:#4CAF50;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;" onclick="toggleMonitor(\\'' + m.bvid + '\\', true)">▶️</button>';
+                    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;background:rgba(0,0,0,0.2);border-radius:6px;margin-bottom:6px;">' +
+                        '<div><span style="color:#00d4ff;font-weight:600;">' + m.bvid + '</span>' +
+                        '<span style="color:' + statusColor + ';margin-left:10px;font-size:0.85rem;">' + statusText + '</span></div>' +
+                        '<div style="display:flex;gap:5px;">' +
+                        '<button style="background:rgba(0,212,255,0.2);color:#00d4ff;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;" onclick="runSingle(\\'' + m.bvid + '\\')">🚀</button>' +
+                        pauseBtn +
+                        '<button style="background:rgba(255,82,82,0.2);color:#ff5252;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;" onclick="removeMonitor(\\'' + m.bvid + '\\')">🗑️</button>' +
+                        '</div></div>';
+                }).join('');
             } catch (e) { console.error(e); }
         }
 
@@ -1162,7 +1134,7 @@ function getIndexHTML(): string {
                 const res = await fetch('/api/monitor', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bvid }) });
                 const json = await res.json();
                 if (json.code !== 0) { alert(json.msg); return; }
-                alert('添加成功！等待下次定时任务抓取');
+                alert('添加成功！点击 🚀 立即抓取');
                 input.value = '';
                 await loadMonitorList();
             } catch (e) { alert('添加失败'); }
@@ -1176,6 +1148,43 @@ function getIndexHTML(): string {
                 if (json.code !== 0) { alert(json.msg); return; }
                 await loadMonitorList();
             } catch (e) { alert('删除失败'); }
+        }
+
+        async function toggleMonitor(bvid, enabled) {
+            try {
+                const res = await fetch('/api/monitor/' + bvid, { 
+                    method: 'PATCH', 
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled })
+                });
+                const json = await res.json();
+                if (json.code !== 0) { alert(json.msg); return; }
+                await loadMonitorList();
+            } catch (e) { alert('操作失败'); }
+        }
+
+        async function runSingle(bvid) {
+            const status = document.getElementById('run-status-text');
+            status.textContent = '正在触发 ' + bvid + '...';
+            try {
+                const fetchReplies = document.getElementById('fetch-replies')?.checked ?? true;
+                const res = await fetch('/api/run', { 
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ bvid, fetch_replies: fetchReplies })
+                });
+                const json = await res.json();
+                if (json.code === 0) {
+                    status.textContent = '已触发 ' + bvid;
+                    setTimeout(() => { status.textContent = '就绪'; }, 3000);
+                } else {
+                    status.textContent = '触发失败';
+                    alert(json.msg);
+                }
+            } catch (e) {
+                status.textContent = '请求失败';
+                alert('运行失败: ' + e.message);
+            }
         }
 
         // ================= Cookie 池管理 =================

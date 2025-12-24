@@ -12,15 +12,14 @@ on:
   workflow_dispatch:
     # 支持手动触发
     inputs:
+      bvid:
+        description: '要抓取的视频 BVID（留空则抓取所有启用的视频）'
+        required: false
+        type: string
       fetch_replies:
         description: '是否抓取回复评论'
         required: false
         default: 'true'
-        type: string
-      action:
-        description: '操作类型 (run/pause/resume)'
-        required: false
-        default: 'run'
         type: string
 
 jobs:
@@ -42,6 +41,6 @@ jobs:
       - name: 运行爬虫
         run: uv run python crawler.py
         env:
+          BVID: ${{ github.event.inputs.bvid }}
           FETCH_REPLIES: ${{ github.event.inputs.fetch_replies || 'true' }}
-          ACTION: ${{ github.event.inputs.action || 'run' }}
           MONGO_URI: ${{ secrets.MONGO_URI }}

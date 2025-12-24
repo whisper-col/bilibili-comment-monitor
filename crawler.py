@@ -28,7 +28,6 @@ def get_config():
     cookies_json = os.environ.get("COOKIES_JSON", "")
     mongo_uri = os.environ.get("MONGO_URI", "")
     fetch_replies = os.environ.get("FETCH_REPLIES", "true").lower() == "true"
-    action = os.environ.get("ACTION", "run")  # run/pause/resume
     
     if not mongo_uri:
         raise ValueError("MONGO_URI 环境变量未设置")
@@ -45,8 +44,7 @@ def get_config():
         "bvid": bvid,  # 可能为空
         "cookies": cookies,  # 可能为空，稍后从 MongoDB 补充
         "mongo_uri": mongo_uri,
-        "fetch_replies": fetch_replies,
-        "action": action
+        "fetch_replies": fetch_replies
     }
 
 
@@ -335,15 +333,6 @@ async def main():
     except ValueError as e:
         print(f"✗ 配置错误: {e}")
         return
-    
-    # 检查 action
-    action = config.get("action", "run")
-    if action == "pause":
-        print("⏸️ 定时抓取已暂停")
-        return
-    elif action == "resume":
-        print("▶️ 定时抓取已恢复")
-        # resume 也继续执行抓取
     
     fetch_replies = config.get("fetch_replies", True)
     print(f"📋 抓取回复: {'是' if fetch_replies else '否'}")
