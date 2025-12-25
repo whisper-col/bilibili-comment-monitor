@@ -17,14 +17,30 @@ const app = new Hono<{ Bindings: Bindings }>()
 // 启用 CORS
 app.use('*', cors())
 
-// Basic Auth 认证（保护所有路由）
+// 不需要认证的路由
+const publicRoutes = ['/api/auth/login', '/login', '/meta.json', '/config'];
+
+// Basic Auth 认证（保护 API 路由）
 app.use('*', async (c, next) => {
     const authUser = c.env?.AUTH_USER as string;
     const authPassword = c.env?.AUTH_PASSWORD as string;
+    const path = new URL(c.req.url).pathname;
+
+    // 公开路由不需要认证
+    if (publicRoutes.some(r => path === r || path.startsWith(r))) {
+        return next();
+    }
 
     // 如果没有配置认证信息，跳过认证（方便开发测试）
     if (!authUser || !authPassword) {
         return next();
+    }
+
+    // 检查是否有 Authorization header
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader) {
+        // 没有认证头，返回 401 让前端处理
+        return c.json({ code: 401, msg: '需要登录' }, 401);
     }
 
     // 使用 Basic Auth
@@ -688,12 +704,304 @@ app.get('/meta.json', (c) => {
 })
 
 
+// ==================== 认证 API ====================
+
+// 登录验证
+app.post('/api/auth/login', async (c) => {
+    const authUser = c.env?.AUTH_USER as string;
+    const authPassword = c.env?.AUTH_PASSWORD as string;
+
+    // 如果没有配置认证信息，直接返回成功
+    if (!authUser || !authPassword) {
+        return c.json({ code: 0, msg: '登录成功', data: { needAuth: false } });
+    }
+
+    const body = await c.req.json();
+    const { username, password } = body;
+
+    if (username === authUser && password === authPassword) {
+        return c.json({ code: 0, msg: '登录成功' });
+    }
+
+    return c.json({ code: 401, msg: '用户名或密码错误' }, 401);
+});
+
+// 检查是否需要认证
+app.get('/api/auth/check', async (c) => {
+    const authUser = c.env?.AUTH_USER as string;
+    const authPassword = c.env?.AUTH_PASSWORD as string;
+
+    // 如果没有配置认证信息，不需要认证
+    if (!authUser || !authPassword) {
+        return c.json({ code: 0, data: { needAuth: false } });
+    }
+
+    return c.json({ code: 0, data: { needAuth: true } });
+});
+
 // ==================== 静态页面 ====================
+
+// 登录页面
+app.get('/login', (c) => {
+    return c.html(getLoginHTML());
+});
 
 // 主页 - 评论监控 WebUI
 app.get('/', (c) => {
     return c.html(getIndexHTML());
 });
+
+// 登录页面 HTML
+function getLoginHTML(): string {
+    return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - B站评论监控</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #e0e0e0;
+        }
+        
+        .login-container {
+            background: rgba(255,255,255,0.05);
+            border-radius: 16px;
+            padding: 40px;
+            width: 100%;
+            max-width: 400px;
+            margin: 20px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+        
+        .login-header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .login-header h1 {
+            font-size: 1.8rem;
+            background: linear-gradient(90deg, #00d4ff, #7b2ff7);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 8px;
+        }
+        
+        .login-header p {
+            color: #888;
+            font-size: 0.9rem;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #aaa;
+            font-size: 0.9rem;
+        }
+        
+        .form-group input[type="text"],
+        .form-group input[type="password"] {
+            width: 100%;
+            padding: 14px 16px;
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 10px;
+            background: rgba(0,0,0,0.3);
+            color: #fff;
+            font-size: 1rem;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        
+        .form-group input:focus {
+            outline: none;
+            border-color: #00d4ff;
+            box-shadow: 0 0 0 3px rgba(0,212,255,0.1);
+        }
+        
+        .remember-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 25px;
+        }
+        
+        .remember-row input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: #00d4ff;
+        }
+        
+        .remember-row label {
+            color: #888;
+            font-size: 0.9rem;
+            cursor: pointer;
+        }
+        
+        .login-btn {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 10px;
+            background: linear-gradient(90deg, #00d4ff, #7b2ff7);
+            color: white;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s, transform 0.2s;
+        }
+        
+        .login-btn:hover {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+        
+        .login-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .error-msg {
+            background: rgba(255,82,82,0.1);
+            border: 1px solid rgba(255,82,82,0.3);
+            color: #ff5252;
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 0.9rem;
+            display: none;
+        }
+        
+        .error-msg.show {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <h1>📡 B站评论监控</h1>
+            <p>请登录以继续</p>
+        </div>
+        
+        <div class="error-msg" id="error-msg"></div>
+        
+        <form id="login-form">
+            <div class="form-group">
+                <label for="username">用户名</label>
+                <input type="text" id="username" name="username" placeholder="请输入用户名" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="password">密码</label>
+                <input type="password" id="password" name="password" placeholder="请输入密码" required>
+            </div>
+            
+            <div class="remember-row">
+                <input type="checkbox" id="remember" name="remember" checked>
+                <label for="remember">记住登录</label>
+            </div>
+            
+            <button type="submit" class="login-btn" id="login-btn">登 录</button>
+        </form>
+    </div>
+    
+    <script>
+        const AUTH_KEY = 'bilibili_monitor_auth';
+        
+        // 检查是否已有保存的凭据
+        async function checkSavedAuth() {
+            const saved = localStorage.getItem(AUTH_KEY);
+            if (saved) {
+                try {
+                    const { username, password } = JSON.parse(saved);
+                    // 尝试自动登录
+                    const res = await fetch('/api/auth/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password })
+                    });
+                    if (res.ok) {
+                        // 保存到 sessionStorage 供后续请求使用
+                        sessionStorage.setItem(AUTH_KEY, saved);
+                        window.location.href = '/';
+                        return;
+                    } else {
+                        // 凭据无效，清除
+                        localStorage.removeItem(AUTH_KEY);
+                    }
+                } catch (e) {
+                    localStorage.removeItem(AUTH_KEY);
+                }
+            }
+        }
+        
+        checkSavedAuth();
+        
+        document.getElementById('login-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const btn = document.getElementById('login-btn');
+            const errorEl = document.getElementById('error-msg');
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            const remember = document.getElementById('remember').checked;
+            
+            btn.disabled = true;
+            btn.textContent = '登录中...';
+            errorEl.classList.remove('show');
+            
+            try {
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                
+                const json = await res.json();
+                
+                if (res.ok && json.code === 0) {
+                    // 登录成功
+                    const authData = JSON.stringify({ username, password });
+                    sessionStorage.setItem(AUTH_KEY, authData);
+                    
+                    if (remember) {
+                        localStorage.setItem(AUTH_KEY, authData);
+                    }
+                    
+                    window.location.href = '/';
+                } else {
+                    errorEl.textContent = json.msg || '登录失败';
+                    errorEl.classList.add('show');
+                }
+            } catch (err) {
+                errorEl.textContent = '网络错误，请重试';
+                errorEl.classList.add('show');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '登 录';
+            }
+        });
+    </script>
+</body>
+</html>`;
+}
 
 // 提供静态资源的内联 HTML
 function getIndexHTML(): string {
@@ -1013,6 +1321,7 @@ function getIndexHTML(): string {
     <div class="container">
         <header>
             <h1>📡 B站评论监控</h1>
+            <button id="logout-btn" onclick="logout()" style="position:absolute;right:20px;top:30px;background:rgba(255,82,82,0.2);color:#ff5252;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:0.85rem;">退出登录</button>
         </header>
 
         <div class="video-selector">
@@ -1062,19 +1371,89 @@ function getIndexHTML(): string {
     </div>
 
     <script>
+        const AUTH_KEY = 'bilibili_monitor_auth';
         let currentBvid = '';
         let currentOffset = 0;
         let videosData = [];
 
+        // 获取认证头
+        function getAuthHeaders() {
+            const saved = sessionStorage.getItem(AUTH_KEY) || localStorage.getItem(AUTH_KEY);
+            if (saved) {
+                const { username, password } = JSON.parse(saved);
+                return {
+                    'Authorization': 'Basic ' + btoa(username + ':' + password)
+                };
+            }
+            return {};
+        }
+
+        // 带认证的 fetch
+        async function authFetch(url, options = {}) {
+            const headers = { ...getAuthHeaders(), ...(options.headers || {}) };
+            const res = await fetch(url, { ...options, headers });
+            if (res.status === 401) {
+                // 未认证，跳转登录
+                sessionStorage.removeItem(AUTH_KEY);
+                window.location.href = '/login';
+                throw new Error('需要登录');
+            }
+            return res;
+        }
+
+        // 退出登录
+        function logout() {
+            if (!confirm('确定要退出登录吗？')) return;
+            localStorage.removeItem(AUTH_KEY);
+            sessionStorage.removeItem(AUTH_KEY);
+            window.location.href = '/login';
+        }
+
         // 初始化
         async function init() {
+            // 检查是否有保存的凭据
+            const saved = sessionStorage.getItem(AUTH_KEY) || localStorage.getItem(AUTH_KEY);
+            if (!saved) {
+                // 检查是否需要认证
+                try {
+                    const res = await fetch('/api/auth/check');
+                    const json = await res.json();
+                    if (json.data?.needAuth) {
+                        window.location.href = '/login';
+                        return;
+                    }
+                } catch (e) {
+                    console.error(e);
+                }
+            } else {
+                // 验证凭据是否有效
+                try {
+                    const { username, password } = JSON.parse(saved);
+                    const res = await fetch('/api/auth/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password })
+                    });
+                    if (!res.ok) {
+                        localStorage.removeItem(AUTH_KEY);
+                        sessionStorage.removeItem(AUTH_KEY);
+                        window.location.href = '/login';
+                        return;
+                    }
+                    // 确保 sessionStorage 有凭据
+                    sessionStorage.setItem(AUTH_KEY, saved);
+                } catch (e) {
+                    console.error(e);
+                }
+            }
+            
             await Promise.all([loadMonitorList(), loadCookies(), loadVideos(), loadRunStatus()]);
             document.getElementById('cookie-file').addEventListener('change', handleCookieFile);
         }
 
         async function loadRunStatus() {
             try {
-                const res = await fetch('/api/run/status');
+                const res = await authFetch('/api/run/status');
                 const json = await res.json();
                 const status = document.getElementById('run-status-text');
                 if (!json.data?.configured) {
@@ -1098,7 +1477,7 @@ function getIndexHTML(): string {
         // ================= 监控列表管理 =================
         async function loadMonitorList() {
             try {
-                const res = await fetch('/api/monitor');
+                const res = await authFetch('/api/monitor');
                 const json = await res.json();
                 if (json.code !== 0) return;
                 const list = document.getElementById('monitor-list');
@@ -1132,7 +1511,7 @@ function getIndexHTML(): string {
             const match = bvid.match(/BV[a-zA-Z0-9]+/i);
             if (match) bvid = match[0];
             try {
-                const res = await fetch('/api/monitor', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bvid }) });
+                const res = await authFetch('/api/monitor', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bvid }) });
                 const json = await res.json();
                 if (json.code !== 0) { alert(json.msg); return; }
                 alert('添加成功！点击 🚀 立即抓取');
@@ -1146,7 +1525,7 @@ function getIndexHTML(): string {
             // 立即显示 loading 状态
             updateBvidStatus(bvid, '删除中...');
             try {
-                const res = await fetch('/api/monitor/' + bvid, { method: 'DELETE' });
+                const res = await authFetch('/api/monitor/' + bvid, { method: 'DELETE' });
                 const json = await res.json();
                 if (json.code !== 0) { alert(json.msg); await loadMonitorList(); return; }
                 await loadMonitorList();
@@ -1157,7 +1536,7 @@ function getIndexHTML(): string {
             // 立即显示 loading 状态
             updateBvidStatus(bvid, enabled ? '启用中...' : '暂停中...');
             try {
-                const res = await fetch('/api/monitor/' + bvid, { 
+                const res = await authFetch('/api/monitor/' + bvid, { 
                     method: 'PATCH', 
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ enabled })
@@ -1185,7 +1564,7 @@ function getIndexHTML(): string {
             updateBvidStatus(bvid, '触发中...');
             try {
                 const fetchReplies = document.getElementById('fetch-replies')?.checked ?? true;
-                const res = await fetch('/api/run', { 
+                const res = await authFetch('/api/run', { 
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ bvid, fetch_replies: fetchReplies })
@@ -1207,7 +1586,7 @@ function getIndexHTML(): string {
         // ================= Cookie 池管理 =================
         async function loadCookies() {
             try {
-                const res = await fetch('/api/cookies');
+                const res = await authFetch('/api/cookies');
                 const json = await res.json();
                 if (json.code !== 0) return;
                 document.getElementById('cookie-count').textContent = '(' + json.data.length + '个)';
@@ -1236,7 +1615,7 @@ function getIndexHTML(): string {
                         data.forEach(item => { if (item.sessdata) cookies.push(item); });
                     }
                     if (cookies.length === 0) throw new Error('无有效 Cookie');
-                    const res = await fetch('/api/cookies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cookies }) });
+                    const res = await authFetch('/api/cookies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cookies }) });
                     const json = await res.json();
                     alert(json.msg || '导入成功');
                     await loadCookies();
@@ -1249,7 +1628,7 @@ function getIndexHTML(): string {
         async function removeCookie(index) {
             if (!confirm('确定删除？')) return;
             try {
-                await fetch('/api/cookies/' + index, { method: 'DELETE' });
+                await authFetch('/api/cookies/' + index, { method: 'DELETE' });
                 await loadCookies();
             } catch (e) { alert('删除失败'); }
         }
@@ -1257,7 +1636,7 @@ function getIndexHTML(): string {
         async function clearCookies() {
             if (!confirm('确定清空所有账号？')) return;
             try {
-                await fetch('/api/cookies', { method: 'DELETE' });
+                await authFetch('/api/cookies', { method: 'DELETE' });
                 await loadCookies();
             } catch (e) { alert('清空失败'); }
         }
@@ -1267,7 +1646,7 @@ function getIndexHTML(): string {
             const select = document.getElementById('video-select');
             try {
                 select.innerHTML = '<option value="">加载中...</option>';
-                const res = await fetch('/api/videos');
+                const res = await authFetch('/api/videos');
                 const json = await res.json();
                 
                 if (json.code !== 0) throw new Error(json.msg);
