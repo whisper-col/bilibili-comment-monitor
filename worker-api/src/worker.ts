@@ -998,24 +998,25 @@ function getIndexHTML(): string {
                 gap: 5px;
             }
         }
+        
+        /* 隐藏滚动条但保留滚动功能 */
+        ::-webkit-scrollbar {
+            width: 0;
+            height: 0;
+        }
+        * {
+            scrollbar-width: none;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
             <h1>📡 B站评论监控</h1>
-            <div class="status-bar" style="flex-wrap:wrap;gap:10px;">
-                <label style="display:flex;align-items:center;gap:5px;color:#888;font-size:0.9rem;">
-                    <input type="checkbox" id="fetch-replies" checked> 抓取回复
-                </label>
-                <div class="status-badge" id="run-status">
-                    <span id="run-status-text">就绪</span>
-                </div>
-            </div>
         </header>
 
         <div class="video-selector">
-            <h3>📋 监控管理</h3>
+            <h3 style="display:flex;justify-content:space-between;align-items:center;">📋 监控管理 <label style="font-weight:normal;font-size:0.9rem;color:#888;display:flex;align-items:center;gap:5px;"><input type="checkbox" id="fetch-replies" checked> 抓取回复</label></h3>
             <div style="display:flex;gap:10px;margin-bottom:15px;">
                 <input type="text" id="bvid-input" placeholder="输入 BVID 或视频链接" style="flex:1;padding:12px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.2);border-radius:8px;color:#fff;">
                 <button class="refresh-btn" onclick="addMonitor()">添加</button>
@@ -1142,15 +1143,19 @@ function getIndexHTML(): string {
 
         async function removeMonitor(bvid) {
             if (!confirm('确定删除 ' + bvid + '？')) return;
+            // 立即显示 loading 状态
+            updateBvidStatus(bvid, '删除中...');
             try {
                 const res = await fetch('/api/monitor/' + bvid, { method: 'DELETE' });
                 const json = await res.json();
-                if (json.code !== 0) { alert(json.msg); return; }
+                if (json.code !== 0) { alert(json.msg); await loadMonitorList(); return; }
                 await loadMonitorList();
-            } catch (e) { alert('删除失败'); }
+            } catch (e) { alert('删除失败'); await loadMonitorList(); }
         }
 
         async function toggleMonitor(bvid, enabled) {
+            // 立即显示 loading 状态
+            updateBvidStatus(bvid, enabled ? '启用中...' : '暂停中...');
             try {
                 const res = await fetch('/api/monitor/' + bvid, { 
                     method: 'PATCH', 
@@ -1158,14 +1163,26 @@ function getIndexHTML(): string {
                     body: JSON.stringify({ enabled })
                 });
                 const json = await res.json();
-                if (json.code !== 0) { alert(json.msg); return; }
+                if (json.code !== 0) { alert(json.msg); }
                 await loadMonitorList();
-            } catch (e) { alert('操作失败'); }
+            } catch (e) { alert('操作失败'); await loadMonitorList(); }
+        }
+
+        function updateBvidStatus(bvid, text) {
+            // 更新指定 BVID 的状态文字
+            const list = document.getElementById('monitor-list');
+            const items = list.querySelectorAll('div > div > span:first-child');
+            items.forEach(span => {
+                if (span.textContent === bvid) {
+                    const statusSpan = span.nextElementSibling;
+                    if (statusSpan) statusSpan.textContent = text;
+                }
+            });
         }
 
         async function runSingle(bvid) {
-            const status = document.getElementById('run-status-text');
-            status.textContent = '正在触发 ' + bvid + '...';
+            // 立即显示 loading 状态
+            updateBvidStatus(bvid, '触发中...');
             try {
                 const fetchReplies = document.getElementById('fetch-replies')?.checked ?? true;
                 const res = await fetch('/api/run', { 
@@ -1175,15 +1192,15 @@ function getIndexHTML(): string {
                 });
                 const json = await res.json();
                 if (json.code === 0) {
-                    status.textContent = '已触发 ' + bvid;
-                    setTimeout(() => { status.textContent = '就绪'; }, 3000);
+                    updateBvidStatus(bvid, '已触发');
+                    setTimeout(() => loadMonitorList(), 2000);
                 } else {
-                    status.textContent = '触发失败';
                     alert(json.msg);
+                    await loadMonitorList();
                 }
             } catch (e) {
-                status.textContent = '请求失败';
                 alert('运行失败: ' + e.message);
+                await loadMonitorList();
             }
         }
 
