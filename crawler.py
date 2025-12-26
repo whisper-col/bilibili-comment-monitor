@@ -77,20 +77,21 @@ def get_cookie_pool(mongo_db, env_cookies: list) -> list:
 
 def get_monitor_list(mongo_db, env_bvid: str) -> list:
     """
-    获取需要监控的 BVID 列表
+    获取需要监控的视频配置列表
     优先从环境变量获取，如果为空则从 MongoDB 的 monitor_config 表获取
+    返回: [{"bvid": "...", "fetch_replies": True/False}, ...]
     """
     if env_bvid:
-        # 环境变量中有 BVID，只监控这一个
-        return [env_bvid]
+        # 环境变量中有 BVID，只监控这一个（默认不抓取回复）
+        return [{"bvid": env_bvid, "fetch_replies": False}]
     
     # 从 MongoDB 读取监控列表
     try:
         config_coll = mongo_db["monitor_config"]
         configs = list(config_coll.find({"enabled": True}))
-        bvids = [c["bvid"] for c in configs if c.get("bvid")]
-        print(f"✓ 从 MongoDB 读取到 {len(bvids)} 个监控视频")
-        return bvids
+        result = [{"bvid": c["bvid"], "fetch_replies": c.get("fetch_replies", False)} for c in configs if c.get("bvid")]
+        print(f"✓ 从 MongoDB 读取到 {len(result)} 个监控视频")
+        return result
     except Exception as e:
         print(f"⚠ 读取监控列表失败: {e}")
         return []
@@ -403,9 +404,6 @@ async def main():
         print(f"✗ 配置错误: {e}")
         return
     
-    fetch_replies = config.get("fetch_replies", True)
-    print(f"📋 抓取回复: {'是' if fetch_replies else '否'}")
-    
     # 连接 MongoDB
     print("\n📦 连接 MongoDB...")
     try:
@@ -425,22 +423,24 @@ async def main():
         return
     
     # 获取监控列表
-    bvid_list = get_monitor_list(mongo_db, config["bvid"])
+    monitor_list = get_monitor_list(mongo_db, config["bvid"])
     
-    if not bvid_list:
+    if not monitor_list:
         print("⚠ 没有需要监控的视频，请在 WebUI 中添加")
         return
     
-    print(f"\n📋 待抓取视频: {len(bvid_list)} 个")
+    print(f"\n📋 待抓取视频: {len(monitor_list)} 个")
     
     # 初始化凭证池
     pool = CredentialPool(cookies)
     
     # 逐个抓取
     total_saved = 0
-    for i, bvid in enumerate(bvid_list, 1):
+    for i, video_config in enumerate(monitor_list, 1):
+        bvid = video_config["bvid"]
+        fetch_replies = video_config.get("fetch_replies", False)
         print(f"\n{'─' * 40}")
-        print(f"[{i}/{len(bvid_list)}] 处理视频: {bvid}")
+        print(f"[{i}/{len(monitor_list)}] 处理视频: {bvid} (抓取回复: {'是' if fetch_replies else '否'})")
         try:
             saved = await crawl_comments(bvid, pool, mongo_db, fetch_replies=fetch_replies)
             total_saved += saved or 0

@@ -272,7 +272,7 @@ app.get('/api/monitor', async (c) => {
     try {
         const db = await getDb(mongoUri);
         const configs = await db.collection('monitor_config').find({}).sort({ created_at: -1 }).toArray();
-        return c.json({ code: 0, data: configs.map((c: any) => ({ bvid: c.bvid, title: c.title || '', enabled: c.enabled !== false, created_at: c.created_at })) });
+        return c.json({ code: 0, data: configs.map((c: any) => ({ bvid: c.bvid, title: c.title || '', enabled: c.enabled !== false, fetch_replies: c.fetch_replies === true, created_at: c.created_at })) });
     } catch (e: any) { return c.json({ code: 500, msg: e.message }); }
 });
 
@@ -294,7 +294,7 @@ app.post('/api/monitor', async (c) => {
         }
 
         const title = body.title?.trim() || '';
-        const newMonitor = { bvid, title, enabled: true, created_at: new Date() };
+        const newMonitor = { bvid, title, enabled: true, fetch_replies: false, created_at: new Date() };
         await db.collection('monitor_config').insertOne(newMonitor);
         return c.json({ code: 0, msg: '添加成功', data: { bvid, title } });
     } catch (e: any) { return c.json({ code: 500, msg: e.message }); }
@@ -313,7 +313,7 @@ app.delete('/api/monitor/:bvid', async (c) => {
     } catch (e: any) { return c.json({ code: 500, msg: e.message }); }
 });
 
-// 更新监控状态（启用/禁用）
+// 更新监控状态（启用/禁用、抓取回复开关）
 app.patch('/api/monitor/:bvid', async (c) => {
     const mongoUri = c.env?.MONGO_URI as string;
     if (!mongoUri) return c.json({ code: 500, msg: 'MONGO_URI not configured' });
@@ -321,12 +321,16 @@ app.patch('/api/monitor/:bvid', async (c) => {
     const body = await c.req.json();
     try {
         const db = await getDb(mongoUri);
+        const updateFields: any = {};
+        if (body.enabled !== undefined) updateFields.enabled = body.enabled;
+        if (body.fetch_replies !== undefined) updateFields.fetch_replies = body.fetch_replies;
+
         const result = await db.collection('monitor_config').updateOne(
             { bvid },
-            { $set: { enabled: body.enabled } }
+            { $set: updateFields }
         );
         if (result.matchedCount === 0) return c.json({ code: 404, msg: '未找到该视频' });
-        return c.json({ code: 0, msg: body.enabled ? '已启用' : '已暂停' });
+        return c.json({ code: 0, msg: '更新成功' });
     } catch (e: any) { return c.json({ code: 500, msg: e.message }); }
 });
 
@@ -442,6 +446,49 @@ app.get('/api/run/status', async (c) => {
 
 // ==================== 飞书数据连接器 API (保留原有功能) ====================
 
+// 获取数据库列表 (飞书连接器用)
+app.post('/get_databases', async (c) => {
+    const { uri } = await c.req.json();
+    const client = new MongoClient(uri, {
+        autoEncryption: undefined,
+        monitorCommands: false,
+        connectTimeoutMS: 5000,
+    } as any);
+    try {
+        await client.connect();
+        const admin = client.db().admin();
+        const result = await admin.listDatabases();
+        const databases = result.databases
+            .map((db: any) => db.name)
+            .filter((name: string) => !['admin', 'local', 'config'].includes(name));
+        return c.json({ code: 0, data: databases });
+    } catch (e: any) {
+        return c.json({ code: 500, msg: e.message });
+    } finally {
+        await client.close();
+    }
+});
+
+// 获取 Collections 列表 (飞书连接器用)
+app.post('/get_collections', async (c) => {
+    const { uri, db } = await c.req.json();
+    const client = new MongoClient(uri, {
+        autoEncryption: undefined,
+        monitorCommands: false,
+        connectTimeoutMS: 5000,
+    } as any);
+    try {
+        await client.connect();
+        const collections = await client.db(db).listCollections().toArray();
+        const names = collections.map((c: any) => c.name).sort();
+        return c.json({ code: 0, data: names });
+    } catch (e: any) {
+        return c.json({ code: 500, msg: e.message });
+    } finally {
+        await client.close();
+    }
+});
+
 // 获取视频列表 (飞书用)
 app.post('/get_videos', async (c) => {
     const { uri, db } = await c.req.json();
@@ -480,31 +527,81 @@ app.get('/config', (c) => {
       <h3>🔌 MongoDB 视频评论选择</h3>
       <label>Connection String (URI)</label>
       <input type="text" id="uri" placeholder="mongodb+srv://..." />
-      <label>Database</label>
-      <input type="text" id="db" value="bilibili_monitor" />
       
-      <div style="margin-top:15px; border-top:1px solid #eee; padding-top:10px;">
-          <button class="btn btn-secondary" id="loadVideosBtn">🔄 加载视频列表</button>
-          <label>选择视频</label>
-          <select id="videoSelect">
+      <div style="display:flex; gap:10px; align-items:flex-end; margin-top:10px;">
+        <div style="flex:1;">
+          <label>Database</label>
+          <select id="db" style="width:100%;">
+            <option value="bilibili_monitor">bilibili_monitor</option>
+          </select>
+        </div>
+        <button class="btn btn-secondary" id="loadDbBtn" style="width:auto; margin:0; padding:8px 15px;">🔄 加载</button>
+      </div>
+      
+      <div style="margin-top:15px; padding:10px; background:#f5f5f5; border-radius:6px;">
+        <label style="margin-top:0;">📺 按视频选择（评论数据）</label>
+        <div style="display:flex; gap:10px; align-items:center;">
+          <select id="videoSelect" style="flex:1;">
             <option value="">请先加载视频列表...</option>
           </select>
+          <button class="btn btn-secondary" id="loadVideosBtn" style="width:auto; margin:0; padding:8px 15px;">🔄 加载</button>
+        </div>
       </div>
-
-      <label>Collection (自动填充)</label>
-      <input type="text" id="coll" value="comments" readonly />
       
-      <button class="btn" id="saveBtn">保存并开始同步</button>
+      <div style="margin-top:10px; padding:10px; background:#f5f5f5; border-radius:6px;">
+        <label style="margin-top:0;">📂 按 Collection 选择（其他数据）</label>
+        <div style="display:flex; gap:10px; align-items:center;">
+          <select id="coll" style="flex:1;">
+            <option value="">请先加载 Collection 列表...</option>
+          </select>
+          <button class="btn btn-secondary" id="loadCollBtn" style="width:auto; margin:0; padding:8px 15px;">🔄 加载</button>
+        </div>
+      </div>
+      
+      <button class="btn" id="saveBtn" style="margin-top:20px;">保存并开始同步</button>
 
       <script type="module">
         import { bitable } from 'https://esm.sh/@lark-base-open/connector-api';
         
-        async function loadVideos() {
+        async function loadDatabases() {
             const uri = document.getElementById('uri').value.trim();
-            const db = document.getElementById('db').value.trim();
             if(!uri) return alert("请先填写 URI");
             
             localStorage.setItem('mongo_uri', uri);
+            const btn = document.getElementById('loadDbBtn');
+            btn.textContent = "加载中...";
+            
+            try {
+                const res = await fetch('/get_databases', {
+                    method: 'POST',
+                    body: JSON.stringify({ uri })
+                });
+                const json = await res.json();
+                if(json.code !== 0) throw new Error(json.msg);
+                
+                const select = document.getElementById('db');
+                select.innerHTML = '';
+                json.data.forEach(dbName => {
+                    const opt = document.createElement('option');
+                    opt.value = dbName;
+                    opt.textContent = dbName;
+                    if(dbName === 'bilibili_monitor') opt.selected = true;
+                    select.appendChild(opt);
+                });
+                
+                btn.textContent = "🔄 加载";
+            } catch(e) {
+                alert("加载失败: " + e.message);
+                btn.textContent = "🔄 加载";
+            }
+        }
+        document.getElementById('loadDbBtn').addEventListener('click', loadDatabases);
+        
+        async function loadVideos() {
+            const uri = document.getElementById('uri').value.trim();
+            const db = document.getElementById('db').value;
+            if(!uri) return alert("请先填写 URI");
+            if(!db) return alert("请先选择 Database");
             
             const btn = document.getElementById('loadVideosBtn');
             btn.textContent = "加载中...";
@@ -520,43 +617,83 @@ app.get('/config', (c) => {
                 const select = document.getElementById('videoSelect');
                 select.innerHTML = '<option value="">-- 请选择视频 --</option>';
                 
-                const allOpt = document.createElement('option');
-                allOpt.value = 'comments';
-                allOpt.textContent = '📂 所有评论 (旧数据)';
-                select.appendChild(allOpt);
-                
                 json.data.forEach(v => {
                     const opt = document.createElement('option');
                     opt.value = v.collection_name || 'comments_' + v.bvid;
-                    opt.textContent = \`📺 \${v.title} (\${v.bvid}) - \${v.comment_count || 0}条\`;
+                    opt.textContent = '📺 ' + (v.title || v.bvid) + ' (' + (v.comment_count || 0) + '条)';
                     select.appendChild(opt);
                 });
                 
-                btn.textContent = "✅ 加载成功";
+                btn.textContent = "🔄 加载";
             } catch(e) {
                 alert("加载失败: " + e.message);
-                btn.textContent = "🔄 重试加载";
+                btn.textContent = "🔄 加载";
             }
         }
+        document.getElementById('loadVideosBtn').addEventListener('click', loadVideos);
+        
+        async function loadCollections() {
+            const uri = document.getElementById('uri').value.trim();
+            const db = document.getElementById('db').value;
+            if(!uri) return alert("请先填写 URI");
+            if(!db) return alert("请先选择 Database");
+            
+            const btn = document.getElementById('loadCollBtn');
+            btn.textContent = "加载中...";
+            
+            try {
+                const res = await fetch('/get_collections', {
+                    method: 'POST',
+                    body: JSON.stringify({ uri, db })
+                });
+                const json = await res.json();
+                if(json.code !== 0) throw new Error(json.msg);
+                
+                const select = document.getElementById('coll');
+                select.innerHTML = '<option value="">-- 请选择 Collection --</option>';
+                
+                json.data.forEach(name => {
+                    const opt = document.createElement('option');
+                    opt.value = name;
+                    opt.textContent = name;
+                    select.appendChild(opt);
+                });
+                
+                btn.textContent = "🔄 加载";
+            } catch(e) {
+                alert("加载失败: " + e.message);
+                btn.textContent = "🔄 加载";
+            }
+        }
+        document.getElementById('loadCollBtn').addEventListener('click', loadCollections);
+        
+        // 选择视频时清空 Collection 选择，反之亦然
+        document.getElementById('videoSelect').addEventListener('change', () => {
+            if(document.getElementById('videoSelect').value) {
+                document.getElementById('coll').value = '';
+            }
+        });
+        document.getElementById('coll').addEventListener('change', () => {
+            if(document.getElementById('coll').value) {
+                document.getElementById('videoSelect').value = '';
+            }
+        });
         
         const savedUri = localStorage.getItem('mongo_uri');
         if (savedUri) document.getElementById('uri').value = savedUri;
-        
-        document.getElementById('loadVideosBtn').onclick = loadVideos;
-        
-        document.getElementById('videoSelect').onchange = (e) => {
-            if(e.target.value) {
-                document.getElementById('coll').value = e.target.value;
-            }
-        };
 
         document.getElementById('saveBtn').onclick = async () => {
+          const videoVal = document.getElementById('videoSelect').value;
+          const collVal = document.getElementById('coll').value;
+          const selectedColl = videoVal || collVal;
+          
+          if(!selectedColl) return alert("请选择一个视频或 Collection");
+          
           const config = {
             uri: document.getElementById('uri').value.trim(),
-            db: document.getElementById('db').value.trim(),
-            coll: document.getElementById('coll').value.trim()
+            db: document.getElementById('db').value,
+            coll: selectedColl
           };
-          if(!config.coll) return alert("请选择一个视频或填写 Collection");
           await bitable.saveConfigAndGoNext(config);
         }
       </script>
@@ -568,8 +705,16 @@ app.get('/config', (c) => {
 // 飞书数据获取
 app.post('/records', async (c) => {
     const reqBody = await c.req.json();
+    console.log(`[records] reqBody: ${JSON.stringify(reqBody).substring(0, 500)}`);
     const params = JSON.parse(reqBody.params);
+    console.log(`[records] params keys: ${Object.keys(params).join(', ')}`);
     const config = typeof params.datasourceConfig === 'string' ? JSON.parse(params.datasourceConfig) : params.datasourceConfig;
+
+    // 分页参数 - 尝试从多个位置读取
+    const pageToken = reqBody.pageToken || params.pageToken || "";
+    const pageSize = 500; // 飞书限制每页最多 500 条
+
+    console.log(`[records] pageToken: "${pageToken}", coll: ${config.coll}`);
 
     const client = new MongoClient(config.uri, {
         autoEncryption: undefined,
@@ -580,89 +725,186 @@ app.post('/records', async (c) => {
         await client.connect();
         const collection = client.db(config.db).collection(config.coll);
 
+        // 计算跳过的记录数
+        const skip = pageToken ? parseInt(pageToken) : 0;
+
+        console.log(`[records] skip: ${skip}`);
+
+        // 多取一条来判断是否有更多数据，避免慢速的 countDocuments
         const docs = await collection.find({})
             .sort({ ctime: 1 })
-            .limit(5000)
+            .skip(skip)
+            .limit(pageSize + 1)
             .toArray();
 
-        const records = docs.map(doc => ({
-            primaryID: String(doc._id),
-            data: {
-                id: String(doc._id),
-                user: doc.user || "",
-                mid: doc.mid ? String(doc.mid) : "",
-                sex: doc.sex || "保密",
-                location: doc.location || "",
-                content: doc.content || "",
-                time: doc.ctime ? new Date(doc.ctime * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : "",
-                level: doc.level ? String(doc.level) : "0",
-                likes: doc.likes ? String(doc.likes) : "0",
-                rcount: doc.rcount ? String(doc.rcount) : "0",
-                fans_medal: doc.fans_medal || ""
+        // 判断是否有更多数据
+        const hasMore = docs.length > pageSize;
+        const actualDocs = hasMore ? docs.slice(0, pageSize) : docs;
+
+        const collName = config.coll || '';
+
+        // 根据 collection 类型格式化数据
+        const records = actualDocs.map(doc => {
+            const primaryID = String(doc._id);
+            let data: any = { id: primaryID };
+
+            if (collName === 'video_stats') {
+                data = {
+                    id: primaryID,
+                    bvid: doc.bvid || "",
+                    timestamp: doc.timestamp ? new Date(doc.timestamp).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : "",
+                    view: doc.view ? String(doc.view) : "0",
+                    like: doc.like ? String(doc.like) : "0",
+                    coin: doc.coin ? String(doc.coin) : "0",
+                    favorite: doc.favorite ? String(doc.favorite) : "0",
+                    share: doc.share ? String(doc.share) : "0",
+                    reply: doc.reply ? String(doc.reply) : "0",
+                    danmaku: doc.danmaku ? String(doc.danmaku) : "0",
+                    online: doc.online ? String(doc.online) : "0"
+                };
+            } else if (collName === 'video_metadata') {
+                data = {
+                    id: primaryID,
+                    bvid: doc.bvid || "",
+                    title: doc.title || "",
+                    comment_count: doc.comment_count ? String(doc.comment_count) : "0",
+                    last_updated: doc.last_updated ? new Date(doc.last_updated).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : ""
+                };
+            } else if (collName === 'monitor_config') {
+                data = {
+                    id: primaryID,
+                    bvid: doc.bvid || "",
+                    title: doc.title || "",
+                    enabled: doc.enabled === true ? "是" : "否",
+                    fetch_replies: doc.fetch_replies === true ? "是" : "否",
+                    created_at: doc.created_at ? new Date(doc.created_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : ""
+                };
+            } else {
+                // 评论表
+                data = {
+                    id: doc.rpid ? String(doc.rpid) : primaryID,
+                    user: doc.user || "",
+                    mid: doc.mid ? String(doc.mid) : "",
+                    sex: doc.sex || "",
+                    location: doc.location || "",
+                    content: doc.content || "",
+                    time: doc.ctime ? new Date(doc.ctime * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : "",
+                    level: doc.level ? String(doc.level) : "0",
+                    likes: doc.likes ? String(doc.likes) : "0",
+                    rcount: doc.rcount ? String(doc.rcount) : "0",
+                    fans_medal: doc.fans_medal || ""
+                };
             }
-        }));
+
+            return { primaryID: data.id, data };
+        });
+
+        // 计算下一页 token
+        const nextSkip = skip + actualDocs.length;
+
+        console.log(`[records] returned ${records.length}, hasMore: ${hasMore}, nextPageToken: ${hasMore ? nextSkip : ''}`);
 
         return c.json({
             code: 0,
             msg: "success",
             data: {
-                hasMore: false,
-                pageToken: "",
+                hasMore,
+                pageToken: hasMore ? String(nextSkip) : "",
                 records
             }
         });
     } catch (err: any) {
+        console.log(`[records] error: ${err.message}`);
         return c.json({ code: 500, msg: "连接失败: " + err.message });
     } finally {
         await client.close();
     }
 })
 
-// 飞书表结构定义
+// 飞书表结构定义 - 根据 collection 动态返回字段
 app.post('/table_meta', async (c) => {
     const reqBody = await c.req.json();
     const params = JSON.parse(reqBody.params);
     const config = typeof params.datasourceConfig === 'string' ? JSON.parse(params.datasourceConfig) : params.datasourceConfig;
 
-    let tableName = "B站评论数据";
-    if (config.uri && config.db && config.coll && config.coll.startsWith('comments_')) {
-        const client = new MongoClient(config.uri, {
-            autoEncryption: undefined,
-            monitorCommands: false,
-            connectTimeoutMS: 5000,
-        } as any);
-        try {
-            await client.connect();
-            const bvid = config.coll.replace('comments_', '');
-            const metadata = await client.db(config.db).collection('video_metadata').findOne({ bvid });
-            if (metadata && metadata.title) {
-                tableName = metadata.title;
+    const collName = config.coll || '';
+    let tableName = collName;
+    let fields: any[] = [];
+
+    // 根据 collection 名称确定字段结构
+    if (collName === 'video_stats') {
+        tableName = '视频统计数据';
+        fields = [
+            { fieldID: "id", fieldName: "记录ID", fieldType: 1, isPrimary: true },
+            { fieldID: "bvid", fieldName: "视频BV号", fieldType: 1 },
+            { fieldID: "timestamp", fieldName: "采集时间", fieldType: 1 },
+            { fieldID: "view", fieldName: "播放量", fieldType: 1 },
+            { fieldID: "like", fieldName: "点赞数", fieldType: 1 },
+            { fieldID: "coin", fieldName: "投币数", fieldType: 1 },
+            { fieldID: "favorite", fieldName: "收藏数", fieldType: 1 },
+            { fieldID: "share", fieldName: "分享数", fieldType: 1 },
+            { fieldID: "reply", fieldName: "评论数", fieldType: 1 },
+            { fieldID: "danmaku", fieldName: "弹幕数", fieldType: 1 },
+            { fieldID: "online", fieldName: "在线人数", fieldType: 1 }
+        ];
+    } else if (collName === 'video_metadata') {
+        tableName = '视频元数据';
+        fields = [
+            { fieldID: "id", fieldName: "记录ID", fieldType: 1, isPrimary: true },
+            { fieldID: "bvid", fieldName: "视频BV号", fieldType: 1 },
+            { fieldID: "title", fieldName: "视频标题", fieldType: 1 },
+            { fieldID: "comment_count", fieldName: "评论数", fieldType: 1 },
+            { fieldID: "last_updated", fieldName: "最后更新", fieldType: 1 }
+        ];
+    } else if (collName === 'monitor_config') {
+        tableName = '监控配置';
+        fields = [
+            { fieldID: "id", fieldName: "记录ID", fieldType: 1, isPrimary: true },
+            { fieldID: "bvid", fieldName: "视频BV号", fieldType: 1 },
+            { fieldID: "title", fieldName: "视频标题", fieldType: 1 },
+            { fieldID: "enabled", fieldName: "是否启用", fieldType: 1 },
+            { fieldID: "fetch_replies", fieldName: "抓取回复", fieldType: 1 },
+            { fieldID: "created_at", fieldName: "创建时间", fieldType: 1 }
+        ];
+    } else {
+        // 评论表或其他表
+        if (collName.startsWith('comments_')) {
+            const client = new MongoClient(config.uri, {
+                autoEncryption: undefined,
+                monitorCommands: false,
+                connectTimeoutMS: 5000,
+            } as any);
+            try {
+                await client.connect();
+                const bvid = collName.replace('comments_', '');
+                const metadata = await client.db(config.db).collection('video_metadata').findOne({ bvid });
+                if (metadata && metadata.title) {
+                    tableName = metadata.title;
+                }
+            } catch (e) {
+                tableName = collName;
+            } finally {
+                await client.close();
             }
-        } catch (e) {
-            // Fallback to default name
-        } finally {
-            await client.close();
         }
+        fields = [
+            { fieldID: "id", fieldName: "评论ID", fieldType: 1, isPrimary: true },
+            { fieldID: "user", fieldName: "用户名", fieldType: 1 },
+            { fieldID: "mid", fieldName: "用户UID", fieldType: 1 },
+            { fieldID: "sex", fieldName: "性别", fieldType: 1 },
+            { fieldID: "location", fieldName: "IP属地", fieldType: 1 },
+            { fieldID: "content", fieldName: "评论内容", fieldType: 1 },
+            { fieldID: "time", fieldName: "发布时间", fieldType: 1 },
+            { fieldID: "level", fieldName: "等级", fieldType: 1 },
+            { fieldID: "likes", fieldName: "点赞数", fieldType: 1 },
+            { fieldID: "rcount", fieldName: "回复数", fieldType: 1 },
+            { fieldID: "fans_medal", fieldName: "粉丝勋章", fieldType: 1 }
+        ];
     }
 
     return c.json({
         code: 0, msg: "success",
-        data: {
-            tableName,
-            fields: [
-                { fieldID: "id", fieldName: "文档ID", fieldType: 1, isPrimary: true },
-                { fieldID: "user", fieldName: "用户名", fieldType: 1 },
-                { fieldID: "mid", fieldName: "用户UID", fieldType: 1 },
-                { fieldID: "sex", fieldName: "性别", fieldType: 1 },
-                { fieldID: "location", fieldName: "IP属地", fieldType: 1 },
-                { fieldID: "content", fieldName: "评论内容", fieldType: 1 },
-                { fieldID: "time", fieldName: "发布时间", fieldType: 1 },
-                { fieldID: "level", fieldName: "等级", fieldType: 1 },
-                { fieldID: "likes", fieldName: "点赞数", fieldType: 1 },
-                { fieldID: "rcount", fieldName: "回复数", fieldType: 1 },
-                { fieldID: "fans_medal", fieldName: "粉丝勋章", fieldType: 1 }
-            ]
-        }
+        data: { tableName, fields }
     })
 })
 
@@ -1311,7 +1553,6 @@ function getIndexHTML(): string {
                 <button class="refresh-btn" onclick="addMonitor()">添加</button>
             </div>
             <input type="text" id="title-input" placeholder="视频名称（可选）" style="width:100%;padding:10px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.2);border-radius:8px;color:#fff;margin-bottom:10px;box-sizing:border-box;">
-            <label style="font-weight:normal;font-size:0.9rem;color:#888;display:flex;align-items:center;gap:5px;margin-bottom:15px;"><input type="checkbox" id="fetch-replies" checked> 抓取回复</label>
             <div id="monitor-list" style="max-height:150px;overflow-y:auto;"></div>
         </div>
 
@@ -1468,9 +1709,13 @@ function getIndexHTML(): string {
                     const statusText = enabled ? '运行中' : '已暂停';
                     const statusColor = enabled ? '#4CAF50' : '#ff9800';
                     const hasTitle = m.title && m.title.length > 0;
+                    const fetchReplies = m.fetch_replies === true;
                     const pauseBtn = enabled 
                         ? '<button style="background:rgba(255,152,0,0.2);color:#ff9800;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;" onclick="toggleMonitor(\\'' + m.bvid + '\\', false)">⏸️</button>'
                         : '<button style="background:rgba(76,175,80,0.2);color:#4CAF50;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;" onclick="toggleMonitor(\\'' + m.bvid + '\\', true)">▶️</button>';
+                    const replyBtn = fetchReplies
+                        ? '<button style="background:rgba(156,39,176,0.3);color:#ce93d8;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;" onclick="toggleReplies(\\'' + m.bvid + '\\', false)" title="抓取回复: 开">💬</button>'
+                        : '<button style="background:rgba(100,100,100,0.2);color:#666;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;" onclick="toggleReplies(\\'' + m.bvid + '\\', true)" title="抓取回复: 关">💬</button>';
                     return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;background:rgba(0,0,0,0.2);border-radius:6px;margin-bottom:6px;">' +
                         '<div style="flex:1;min-width:0;">' +
                         (hasTitle 
@@ -1479,6 +1724,7 @@ function getIndexHTML(): string {
                         '</div>' +
                         '<div style="display:flex;gap:5px;flex-shrink:0;">' +
                         '<button style="background:rgba(0,212,255,0.2);color:#00d4ff;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;" onclick="runSingle(\\'' + m.bvid + '\\')">🚀</button>' +
+                        replyBtn +
                         pauseBtn +
                         '<button style="background:rgba(255,82,82,0.2);color:#ff5252;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;" onclick="removeMonitor(\\'' + m.bvid + '\\')">🗑️</button>' +
                         '</div></div>';
@@ -1534,6 +1780,19 @@ function getIndexHTML(): string {
                     method: 'PATCH', 
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ enabled })
+                });
+                const json = await res.json();
+                if (json.code !== 0) { alert(json.msg); }
+                await loadMonitorList();
+            } catch (e) { alert('操作失败'); await loadMonitorList(); }
+        }
+
+        async function toggleReplies(bvid, fetch_replies) {
+            try {
+                const res = await authFetch('/api/monitor/' + bvid, { 
+                    method: 'PATCH', 
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ fetch_replies })
                 });
                 const json = await res.json();
                 if (json.code !== 0) { alert(json.msg); }
